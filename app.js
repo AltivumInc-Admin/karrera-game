@@ -6,6 +6,9 @@
 (function () {
   'use strict';
 
+  // ---- Config ----
+  const SHORTEN_API = 'https://lc370jyrlk.execute-api.us-east-1.amazonaws.com/shorten';
+
   // ---- State ----
   let gameData = null; // { name, claims: [str,str,str], lie: 0|1|2 }
   let selectedGuessIndex = null;
@@ -136,7 +139,7 @@
     $('#btn-create').disabled = !valid;
   }
 
-  function createChallenge() {
+  async function createChallenge() {
     const textareas = $$('.claim-input-card textarea');
     const lieIndex = parseInt($('input[name="lie-pick"]:checked').value);
     const name = $('#creator-name').value.trim();
@@ -144,15 +147,76 @@
 
     // Encode into URL hash
     const encoded = encodeGame(name, claims, lieIndex);
-    const shareUrl = getBaseUrl() + '#' + encoded;
+    const longUrl = getBaseUrl() + '#' + encoded;
 
-    // Store the creator's email for potential future use
-    const email = $('#creator-email').value.trim();
-    if (email) {
-      try { localStorage.setItem('karrera_email', email); } catch (e) {}
+    // Show share screen immediately with long URL
+    showShareScreen(longUrl, name);
+
+    // Then try to shorten in the background
+    try {
+      const shortUrl = await shortenUrl(longUrl, `${name}'s Two Truths and a Lie`);
+      if (shortUrl) {
+        updateShareUrl(shortUrl, longUrl);
+      }
+    } catch (e) {
+      // Shortening failed silently — long URL is already displayed
+      console.warn('URL shortening failed:', e);
     }
+  }
 
-    showShareScreen(shareUrl, name);
+  // ---- URL Shortening ----
+  async function shortenUrl(longUrl, title) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+    try {
+      const resp = await fetch(SHORTEN_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: longUrl, title: title }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data.short_url || null;
+    } catch {
+      clearTimeout(timeout);
+      return null;
+    }
+  }
+
+  function updateShareUrl(shortUrl, longUrl) {
+    const input = $('#share-url');
+    if (input && input.value === longUrl) {
+      input.value = shortUrl;
+      // Update share button handlers with short URL
+      const shareText = `I posted my career "Two Truths and a Lie" on Karrera. Think you can spot my fake credential?`;
+      $('#btn-share-linkedin').onclick = () => {
+        window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shortUrl)}`, '_blank', 'width=600,height=500');
+      };
+      $('#btn-share-x').onclick = () => {
+        window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shortUrl)}`, '_blank', 'width=600,height=400');
+      };
+      // Update copy button to copy short URL
+      $('#btn-copy').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(shortUrl);
+          $('#btn-copy').classList.add('copied');
+          $('#btn-copy span').textContent = 'Copied!';
+          setTimeout(() => {
+            $('#btn-copy').classList.remove('copied');
+            $('#btn-copy span').textContent = 'Copy';
+          }, 2000);
+        } catch {
+          input.select();
+          document.execCommand('copy');
+        }
+      };
+      // Brief visual flash to signal the URL was shortened
+      input.style.transition = 'background-color 0.3s';
+      input.style.backgroundColor = 'rgba(13,148,136,0.15)';
+      setTimeout(() => { input.style.backgroundColor = ''; }, 1200);
+    }
   }
 
   // ---- Share Screen ----
@@ -238,12 +302,6 @@
   function submitGuess() {
     const guesserName = $('#guesser-name').value.trim();
     const isCorrect = selectedGuessIndex === gameData.lie;
-
-    // Store guesser email if provided
-    const email = $('#guesser-email').value.trim();
-    if (email) {
-      try { localStorage.setItem('karrera_email', email); } catch (e) {}
-    }
 
     showRevealScreen(isCorrect, guesserName);
   }
